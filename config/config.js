@@ -8,7 +8,7 @@ const systemUser = "zp"
 const systemPassword = "xxx";
 
 // 运行端口
-const port = 3008
+const port = 8080
 
 // 保存上传文件的目录
 const uploadDir = path.join(process.cwd(), 'uploads/')
