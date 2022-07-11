@@ -43,7 +43,7 @@ function handle404(res, fileDir) {
     return false
 }
 
-var server = http.createServer(function(req, res) {
+var server = http.createServer(function (req, res) {
 
     let url = decodeURI(req.url);
     console.log("url: ", url);
@@ -71,11 +71,7 @@ var server = http.createServer(function(req, res) {
         return;
     }
 
-    // cookie验证, 如果验证不成功, 就只发送verify.html
-    if (!cookieVerify(req.headers.cookie) && NeedVerify) {
-        sendPage(res, './public/verify.html', 400);
-        return;
-    }
+
 
 
     if (url === '/' && method === 'get') {
@@ -88,17 +84,29 @@ var server = http.createServer(function(req, res) {
         getAllFileInfo(req, res)
 
     } else if (url === '/uploadFile' && method === 'post') {
-
+        // cookie验证, 如果验证不成功, 就只发送verify.html
+        if (!cookieVerify(req.headers.cookie) && NeedVerify) {
+            sendPage(res, './public/verify.html', 400);
+            return;
+        }
         // 上传文件
         uploadFile(req, res)
 
     } else if (/^\/deleteFile?/.test(url) && method === 'get') {
-
+        // cookie验证, 如果验证不成功, 就只发送verify.html
+        if (!cookieVerify(req.headers.cookie) && NeedVerify) {
+            sendPage(res, './public/verify.html', 400);
+            return;
+        }
         // 删除文件
         deleteFile(req, res)
 
     } else if (/^\/modifyTextFile?/.test(url) && method === 'post') {
-
+        // cookie验证, 如果验证不成功, 就只发送verify.html
+        if (!cookieVerify(req.headers.cookie) && NeedVerify) {
+            sendPage(res, './public/verify.html', 400);
+            return;
+        }
         // 修改文本文件
         modifyTextFile(req, res)
 
@@ -124,7 +132,7 @@ console.log('running port:', port)
 
 
 // 异常处理
-process.on("uncaughtException", function(err) {
+process.on("uncaughtException", function (err) {
     if (err.code == 'ENOENT') {
         console.log("no such file or directory: ", err.path);
     } else {
@@ -133,9 +141,9 @@ process.on("uncaughtException", function(err) {
 })
 
 
-process.on("SIGINT", function() {
+process.on("SIGINT", function () {
     process.exit()
 })
-process.on("exit", function() {
+process.on("exit", function () {
     console.log("exit");
 })

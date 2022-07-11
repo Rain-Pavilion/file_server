@@ -4,8 +4,8 @@ const path = require('path');
  */
 
 // 登录系统的账号密码
-const systemUser = "zp"
-const systemPassword = "xxx";
+const systemUser = "yuting"
+const systemPassword = "yuting";
 
 // 运行端口
 const port = 8080
