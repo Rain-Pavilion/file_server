@@ -18,6 +18,7 @@ const {
 } = require('./control/control');
 
 
+const NeedVerify = false
 
 
 // 如果uploadDir目录不存在就创建目录
@@ -71,7 +72,7 @@ var server = http.createServer(function(req, res) {
     }
 
     // cookie验证, 如果验证不成功, 就只发送verify.html
-    if (!cookieVerify(req.headers.cookie)) {
+    if (!cookieVerify(req.headers.cookie) && NeedVerify) {
         sendPage(res, './public/verify.html', 400);
         return;
     }
