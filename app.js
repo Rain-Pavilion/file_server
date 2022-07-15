@@ -13,6 +13,7 @@ const {
     cookieVerify,
     getAllFileInfo,
     uploadFile,
+    downloadFile,
     deleteFile,
     modifyTextFile
 } = require('./control/control');
