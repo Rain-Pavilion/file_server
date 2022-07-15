@@ -223,7 +223,7 @@ function uploadFile(req, res) {
 }
 
 // 下载文件
-function downloadFile(req, res,filePath) {
+function downloadFile(req, res,filePath,fileName) {
     try {
         // fs.readFile 和 fs.writeFile有内存限制问题，下载大文件时，会提示"ERR_FS_FILE_TOO_LARGE"，因此大文件采用createReadStream
         fs.readFile(filePath, (err, data) => {
@@ -238,7 +238,7 @@ function downloadFile(req, res,filePath) {
           const size = fs.statSync(filePath).size;
           res.writeHead(200, {
             // 告诉浏览器这是一个需要以附件形式下载的文件（浏览器下载的默认行为，前端可以从这个响应头中获取文件名：前端使用ajax请求下载的时候，后端若返回文件流，此时前端必须要设置文件名-主要是为了获取文件后缀，否则前端会默认为txt文件）
-            'Content-Disposition': 'attachment; filename=' + encodeURIComponent(req.query.name),
+            'Content-Disposition': 'attachment; filename=' + encodeURIComponent(fileName),
             // 告诉浏览器是二进制文件，不要直接显示内容
             'Content-Type': 'application/octet-stream',
             // 下载文件大小

@@ -115,9 +115,10 @@ var server = http.createServer(function (req, res) {
 
         // 下载文件, 默认发送uploads目录下的文件
         let fileDir = path.join(uploadDir, url);
+        let fileName = url
         if (!handle404(res, fileDir)) {
-            console.log("下载文件: ", fileDir);
-            downloadFile(req, res,fileDir)
+            console.log("下载文件: ", fileDir,fileName);
+            downloadFile(req, res,fileDir,fileName)
         }
 
     }
