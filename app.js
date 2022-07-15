@@ -116,7 +116,7 @@ var server = http.createServer(function (req, res) {
         let fileDir = path.join(uploadDir, url);
         if (!handle404(res, fileDir)) {
             console.log("下载文件: ", fileDir);
-            fs.createReadStream(fileDir).pipe(res)
+            downloadFile(req, res,fileDir)
         }
 
     }
