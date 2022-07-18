@@ -1,38 +1,59 @@
 const fs = require('fs');
-const formidable = require('formidable')
 const path = require('path');
+const formidable = require('formidable')
+var zipper = require("zip-local");
 
 const {
+    config
+} = require('../config/config.js')
+
+let {
     systemUser,
     systemPassword,
     uploadDir,
-    login_info_path
-} = require('../config/config.js')
+    setUploadDir,
+    login_record_path
+} = config
 
+
+const {
+    getIp,
+    cookiesSplitArray,
+    cookieSplitKeyValue,
+    mkdirSync,
+    getJsonFile,
+    saveJsonFile,
+    pushJsonData
+} = require('../utils/common.js')
+
+
+const {
+    formatDateTime,
+    formatDateTime2
+} = require('../utils/formatDateTime')
 
 
 const log = console.log;
-let login_info_writeStream = fs.createWriteStream(login_info_path, { flags: 'a' })
+const loginSuccessCookieArr = []; // 存在缺陷, 重启时loginSuccessCookieArr数据会丢失, 可以用Redis持久化保存
 
 
-//通过req的hearers来获取客户端ip
-function getIp(req) {
-    let ip = req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.connection.remoteAddres || req.socket.remoteAddress || '';
-    return ip;
-}
+
+/**
+ * API 处理函数 start
+ */
 
 
-// 验证账号密码, 验证成功则设置cookie, 验证结果写入到login_info.log日志文件里
+// 验证账号密码, 验证成功则设置cookie, 验证结果写入到login_record.log日志文件里
 function identityVerify(req, res) {
 
     let clientIp = getIp(req);
     console.log('客户端ip: ', clientIp);
 
     let verify_str = ''
-    req.on('data', function(verify_data) {
+    req.on('data', function (verify_data) {
         verify_str += verify_data;
     })
-    req.on('end', function() {
+    req.on('end', function () {
         let verify_obj = {};
         try {
             verify_obj = JSON.parse(verify_str)
@@ -46,26 +67,43 @@ function identityVerify(req, res) {
         });
 
         // 保存登录信息日志
-        login_info_writeStream.write("Time: " + new Date().toLocaleString() + '\n')
-        login_info_writeStream.write("IP地址: " + clientIp + '\n')
+        let loginInfo = {
+            Time: formatDateTime(),
+            IP: clientIp,
+            User: verify_obj.user
+        }
 
         if (verify_obj.user === systemUser && verify_obj.password === systemPassword) {
             // 验证成功
             log("验证成功")
+            loginInfo.Result = "验证成功"
 
-            login_info_writeStream.write("User: " + verify_obj.user + '\n验证成功\n\n')
+            let randomKey = String(Math.random()).slice(2);
+            let randomValue = String(Math.random()).slice(2, 12) + String(Date.now());
 
-            // 设置cookie, 过期时间2小时
+            // 把生成的随机key和value设置到cookie, 过期时间2小时
+            let twoHour = 1000 * 60 * 60 * 2;
             res.writeHead(200, {
-                'Set-Cookie': verify_obj.user + "=" + verify_obj.password + ";path=/;expires=" + new Date(Date.now() + 1000 * 60 * 60 * 2).toGMTString(),
+                'Set-Cookie': randomKey + "=" + randomValue + ";path=/;expires=" + new Date(Date.now() + twoHour).toGMTString(),
             });
+            // 时间一到后端也删除该cookie
+            setTimeout(function () {
+                deleteLoginSuccessCookieArrItem(randomKey + "=" + randomValue)
+            }, twoHour)
+
+            // 登录成功就把生成的随机key和value存到loginSuccessCookieArr中
+            loginSuccessCookieArr.push(randomKey + "=" + randomValue);
+
             res.end(JSON.stringify({ code: 0, msg: "验证成功" }));
 
         } else {
             // 验证失败
-            login_info_writeStream.write("User: " + verify_obj.user + "\t\t\t\tPassword: " + verify_obj.password + '\n验证失败\n\n')
+            loginInfo.Result = "验证失败"
+            loginInfo.Password = verify_obj.password
+
             res.end(JSON.stringify({ code: 1, msg: "验证失败" }));
         }
+        pushJsonData(login_record_path, loginInfo)
 
     })
 }
@@ -73,39 +111,18 @@ function identityVerify(req, res) {
 
 
 
-// 把cookie拆分成数组
-function cookiesSplitArray(cookies) {
-    // let cookies = req.headers.cookie;
-    let cookieArray = [];
-    if (cookies) {
-        cookieArray = cookies.split(';')
-    }
-    return cookieArray;
-}
-
-// 把单个cookie的键值拆开
-function cookieSplitKeyValue(cookie) {
-    if (!cookie) return {};
-    let KeyValue = cookie.trim().split('=');
-    const cookie_key = KeyValue[0];
-    const cookie_value = KeyValue[1];
-    return { cookie_key, cookie_value }
-}
-
 // cookie验证
-// 如果cookie中有一对键值等于系统登录的账号密码, 就认为验证成功(验证失败最多只能获得public目录下的文件)
-function cookieVerify(cookies) {
-    const cookieArray = cookiesSplitArray(cookies)
+// 如果cookie中有一对键值存在于loginSuccessCookieArr中, 就认为验证成功
+function cookieVerify(req) {
+    const cookies = req.headers.cookie;
+    const cookieArray = cookiesSplitArray(cookies);
 
     // 新增的cookie一般在最后, 因此数组从后往前遍历
     for (let index = cookieArray.length; index >= 0; index--) {
         const item = cookieArray[index];
-        // let itemCookie = item.trim().split('=');
-        // const cookie_key = itemCookie[0];
-        // const cookie_value = itemCookie[1];
         const { cookie_key, cookie_value } = cookieSplitKeyValue(item);
 
-        if (cookie_key === systemUser && cookie_value === systemPassword) {
+        if (loginSuccessCookieArr.includes(cookie_key + "=" + cookie_value)) {
             return true;
         }
     }
@@ -114,20 +131,57 @@ function cookieVerify(cookies) {
 }
 
 
+// 退出登录, 删除loginSuccessCookieArr中对应的cookie
+function logout(req, res) {
+    const cookies = req.headers.cookie;
+    const cookieArray = cookiesSplitArray(cookies);
+
+    // 新增的cookie一般在最后, 因此数组从后往前遍历
+    for (let index = cookieArray.length; index >= 0; index--) {
+        const item = cookieArray[index];
+        const { cookie_key, cookie_value } = cookieSplitKeyValue(item);
+        let deleteRes = deleteLoginSuccessCookieArrItem(cookie_key + "=" + cookie_value)
+        if (deleteRes) {
+            // 删除成功把cookie_key返回让前端也删除该cookie
+            res.end(cookie_key)
+        }
+    }
+}
+
+
+function deleteLoginSuccessCookieArrItem(item) {
+    let cookieIndex = loginSuccessCookieArr.indexOf(item)
+    if (cookieIndex > -1) {
+        console.log("删除cookie: ", item);
+        loginSuccessCookieArr.splice(cookieIndex, 1)
+        return true;
+    }
+    return false;
+}
+
 
 // 读取uploadDir目录下的文件信息并返回
-function getAllFileInfo(req, res) {
-    fs.readdir(uploadDir, (err, data) => {
-        // console.log(data);
+function getAllFileInfo(req, res, directory) {
+
+    let fileDir = path.join(uploadDir, directory + '/');
+    setUploadDir(fileDir)
+
+    console.log('读取文件夹下的文件信息: ', uploadDir,directory);
+
+    fs.readdir(fileDir, (err, data) => {
+        if (!Array.isArray(data)) {
+            res.end('路径不存在')
+            return;
+        }
         let resultArray = [];
         for (let d of data) {
-            let statSyncRes = fs.statSync(uploadDir + d);
+            let statSyncRes = fs.statSync(fileDir + d);
             // console.log("statSyncRes", statSyncRes)
             resultArray.push({
                 src: d,
                 size: statSyncRes.size,
-                //mtimeMs: statSyncRes.mtimeMs,  // 我发现有些电脑上的文件没有mtimeMs属性, 所以将mtime转成时间戳发过去
-                mtimeMs: new Date(statSyncRes.mtime).getTime()
+                mtimeMs: statSyncRes.mtimeMs,
+                isDirectory: statSyncRes.isDirectory() // 是否为文件夹
             })
         }
         // console.log(resultArray);
@@ -136,90 +190,180 @@ function getAllFileInfo(req, res) {
 }
 
 
-// 上传文件
-function uploadFile(req, res) {
-    console.log("上传文件");
 
-    var form = new formidable.IncomingForm();
+// 上传文件, 文件/多文件/文件夹都用这同一个方法上传(如果需要把文件上传到指定文件夹下,在上传的时候需要多传递一个文件路径的字段信息,然后后端使用uploadDir拼接这个字段就可以得到完整的保存路径,接下来保存就行了)
+function uploadFile(req, res) {
+    let url = decodeURI(req.url);
+    console.log("上传文件",url);
+    res.writeHead(200, { 'content-type': 'text/plain;charset=UTF-8' });
+
+    let form = new formidable.IncomingForm();
     form.uploadDir = uploadDir; // 保存上传文件的目录
     form.multiples = true; // 设置为多文件上传
     form.keepExtensions = true; // 保持原有扩展名
-    form.maxFileSize = 10 * 1024 * 1024 * 1024; // 文件最大为10GB
-
-    // 文件大小超过限制会触发error事件
-    form.on("error", function(e) {
-        console.log("文件大小超过限制, error: ", e);
-        res.writeHead(400, { 'content-type': 'text/html;charset=UTF-8' });
-        res.end("文件大小超过10GB, 无法上传, 你难道不相信?")
-    })
+    form.maxFileSize = 10 * 1024 * 1024 * 1024; // 限制上传文件最大为10GB
+    form.maxFields = 10; // 限制字段的数量
+    form.maxFieldsSize = 100; // 限制字段大小, 单位bytes
 
 
-    form.parse(req, function(err, fields, files) {
+    form.on('end', (err) => {
+        res.end("文件全部上传成功!")
+    });
 
+
+    form.parse(req, function (err, fields, files) {
+        console.log('err',err, fields,files)
         if (err) {
-            console.log("err: ", err);
-            res.writeHead(500, { 'content-type': 'text/html;charset=UTF-8' });
-            res.end('上传文件失败: ' + JSON.stringify(err));
+            console.log("接收文件出错: ", JSON.stringify(err.message));
+            res.writeHead(400, { 'content-type': 'text/html;charset=UTF-8' });
+            res.end("文件大小过大或者文件总数过多, 无法上传;\n错误信息:" + JSON.stringify(err.message));
             return;
         }
 
-        // console.log(files);
-        // console.log(files.uploadFile);
-
-        if (!files.uploadFile) {
-            res.end('上传文件的name需要为uploadFile');
-            return
-        };
-
-
-        // 单文件上传时files.uploadFile为对象类型, 多文件上传时为数组类型, 
-        // 单文件上传时也将files.uploadFile变成数组类型当做多文件上传处理;
-        if (Object.prototype.toString.call(files.uploadFile) === '[object Object]') {
-
-            files.uploadFile = [files.uploadFile];
-            // var fileName = files.uploadFile.name; // 单文件上传时直接.name就可以得到文件名
-
+        // console.log('files:\n', files);
+        for (let key in files) {
+            rename(files[key])
         }
 
-
-        let err_msg = ''
-        for (let file of files.uploadFile) {
-            var fileName = file.name;
-
-            console.log("上传文件名: ", fileName);
-
-
-            var suffix = fileName.slice(fileName.lastIndexOf('.'));
-
-            var oldPath = file.path;
-            var newPath = uploadDir + fileName;
-
-            // log(oldPath)
-            // log(newPath)
-
-
-            // 如果不允许覆盖同名文件
-            if (fields.allowCoverage !== 'true') {
-                // 并且文件已经存在，那么在文件后面加上时间戳再加文件后缀
-                if (fs.existsSync(newPath)) {
-                    newPath = newPath + '-' + Date.now() + suffix;
-                }
+        // 文件会被formidable自动保存, 而且文件名随机, 因此保存后建议重命名
+        function rename(fileItem) {
+            // 单文件上传时fileItem为对象, 多文件上传时fileItem为数组,
+            // 单文件上传时也将fileItem变成数组统一当做多文件上传处理;
+            let fileArr = fileItem;
+            if (Object.prototype.toString.call(fileItem) === '[object Object]') {
+                fileArr = [fileItem];
             }
 
-            // 文件会被formidable自动保存, 而且文件名随机, 因此保存后需要改名
-            fs.rename(oldPath, newPath, function(err) {
-                if (err) {
-                    console.log("err: ", err);
-                    err_msg += JSON.stringify(err) + '\n';
+            for (let file of fileArr) {
+
+                let fileName = file.name; // 上传文件夹时文件名可能包含上传的文件夹路径
+                console.log("上传文件名: ", fileName);
+
+                let suffix = path.extname(fileName); // 文件后缀名
+
+                let oldPath = file.path; // formidable自动保存后的文件路径
+                let newPath = path.join(uploadDir, fileName);
+
+                // log('oldPath', oldPath)
+                // log('newPath', newPath)
+
+                // 防止路径不存在
+                mkdirSync(newPath);
+
+                // 如果不允许覆盖同名文件
+                if (fields.isAllowCoverageFile !== 'true') {
+                    // 并且文件已经存在，那么在文件后面加上时间和随机数再加文件后缀
+                    if (fs.existsSync(newPath)) {
+                        // newPath = newPath + '-' + formatDateTime2() + '-' + Math.trunc(Math.random() * 1000) + suffix;
+                    }
                 }
-            })
+
+                fs.rename(oldPath, newPath, function (err) {
+                    if (err) {
+                        log(err)
+                    }
+                })
+            }
+
         }
 
-        //res.writeHead(200, { 'content-type': 'text/plain;charset=UTF-8' });
-        // res.writeHead(301, { 'Location': '/' });
-        res.end(err_msg);
-
     });
+}
+
+
+// 递归删除目录
+function deleteAllFile(path) {
+    var files = [];
+    if (fs.existsSync(path)) {
+        files = fs.readdirSync(path);
+        files.forEach(function (file, index) {
+            var curPath = path + "/" + file;
+            if (fs.statSync(curPath).isDirectory()) {
+                deleteAllFile(curPath); // 递归删除目录
+            } else {
+                // 删除文件
+                fs.unlinkSync(curPath);
+            }
+        });
+        fs.rmdirSync(path);
+    }
+}
+
+
+// 根据文件名删除文件
+function deleteFile(req, res) {
+    let url = decodeURI(req.url);
+    let fileName = url.slice(url.indexOf('?') + 1);
+    console.log("删除文件: ", fileName);
+
+    var rootPath = uploadDir + fileName;
+
+    if (fs.statSync(rootPath).isDirectory()) {
+        deleteAllFile(rootPath); // 递归删除目录
+    } else {
+        fs.unlinkSync(rootPath); // 删除文件
+    }
+
+    res.end();
+}
+
+
+// 根据文件名和数据修改(覆盖)文本文件
+function modifyTextFile(req, res) {
+    let url = decodeURI(req.url);
+    let fileName = url.slice(url.indexOf('?') + 1);
+    console.log("修改(覆盖)文本文件: ", fileName)
+
+    let WriteStream = fs.createWriteStream(uploadDir + fileName)
+
+    WriteStream.on('error', function (err) {
+        res.end(JSON.stringify({ code: 1, msg: JSON.stringify(err) }))
+    })
+
+    WriteStream.on('finish', function () {
+        res.end(JSON.stringify({ code: 0, msg: "保存成功" }))
+    })
+
+    req.on('data', function (data) {
+        WriteStream.write(data)
+    })
+
+    req.on('end', function () {
+        WriteStream.end()
+        WriteStream.close()
+    })
+}
+
+// 文件夹下载
+function directoryDownload(req, res, url) {
+    // 要下载的文件夹路径
+    let dirPath = path.join(uploadDir, url.slice('/directoryDownload'.length));
+    // 生成的临时压缩包路径
+    let tempDir = path.join(process.cwd(), 'tmp', 'zip', './uploads' + url.slice('/directoryDownload'.length) + '.zip')
+
+    console.log("dirPath: ", dirPath);
+    console.log("tempDir: ", tempDir);
+
+    mkdirSync(tempDir, function () {
+
+        // 把文件夹压缩成压缩包
+        zipper.sync.zip(dirPath).compress().save(tempDir);
+
+        let createReadStream = fs.createReadStream(tempDir)
+        createReadStream.pipe(res)
+        createReadStream.on('end', () => {
+            console.log("传输完成");
+            // 传输完成后删除临时压缩包文件(压缩包所在的文件夹没有删除, 如果要删除可以使用本文件中的deleteAllFile()方法)
+            fs.unlink(tempDir, (err) => {
+                if (err) {
+                    console.log(err);
+                    res.end('delete fail: ' + JSON.stringify(err));
+                }
+                console.log("删除文件", tempDir);
+            });
+        })
+    })
+
 }
 
 // 下载文件
@@ -261,49 +405,111 @@ function downloadFile(req, res,filePath,fileName) {
     
 }
 
-// 根据文件名删除文件
-function deleteFile(req, res) {
-    let url = decodeURI(req.url);
-    let fileName = url.slice(url.indexOf('?') + 1);
-    console.log("删除文件: ", fileName)
 
-    fs.unlink(uploadDir + fileName, (err) => {
-        if (err) {
-            console.log(err);
-            res.end('delete fail: ' + JSON.stringify(err));
+
+// 移动文件或文件夹
+function moveFile(req, res) {
+    console.log("移动文件或文件夹")
+    let str = ''
+
+    req.on('data', function (data) {
+        str += data;
+    })
+
+    req.on('end', function () {
+        console.log('str', str);
+        let data = JSON.parse(str)
+        let oldPath = path.join(uploadDir, data.oldPath)
+        let newPath = path.join(uploadDir, data.newPath)
+        console.log('oldPath', oldPath);
+        console.log('newPath', newPath);
+
+        if (!fs.existsSync(oldPath)) {
+            res.end(data.oldPath + "路径不存在")
             return;
         }
-        res.end();
-    });
-}
+        if (!fs.existsSync(newPath)) {
+            mkdirSync(newPath)
+        }
 
-
-// 根据文件名和数据修改(覆盖)文本文件
-function modifyTextFile(req, res) {
-    let url = decodeURI(req.url);
-    let fileName = url.slice(url.indexOf('?') + 1);
-    console.log("修改(覆盖)文本文件: ", fileName)
-
-    let WriteStream = fs.createWriteStream(uploadDir + fileName)
-
-    WriteStream.on('error', function(err) {
-        res.end(JSON.stringify({ code: 1, msg: JSON.stringify(err) }))
-    })
-
-    WriteStream.on('finish', function() {
-        res.end(JSON.stringify({ code: 0, msg: "保存成功" }))
-    })
-
-    req.on('data', function(data) {
-        WriteStream.write(data)
-    })
-
-    req.on('end', function() {
-        WriteStream.end()
-        WriteStream.close()
+        fs.rename(oldPath, newPath, function (err) {
+            if (err) {
+                console.log(err);
+                res.end(err.message)
+                return;
+            }
+            res.end('移动成功')
+        })
     })
 }
 
+
+
+function newFile(req, res) {
+    let str = ''
+
+    req.on('data', function (data) {
+        str += data;
+    })
+
+    req.on('end', function () {
+        console.log('str', str);
+        let data = JSON.parse(str)
+        let newFileName = path.join(uploadDir, data.newFileName)
+        console.log('newFileName', newFileName);
+
+        if (fs.existsSync(newFileName)) {
+            res.end(data.newFileName + "文件已经存在")
+            return;
+        }
+
+        // 创建文件路径
+        mkdirSync(newFileName)
+
+        fs.writeFile(newFileName, '', function (error) {
+            if (error) {
+                res.end(JSON.stringify(error))
+                return;
+            }
+            res.end("创建文件成功")
+        })
+    })
+}
+
+
+
+
+function newFolder(req, res) {
+    let str = ''
+
+    req.on('data', function (data) {
+        str += data;
+    })
+
+    req.on('end', function () {
+        console.log('str', str);
+        let data = JSON.parse(str)
+        let newFolderName = path.join(uploadDir, data.newFolderName)
+        console.log('newFolderName', newFolderName);
+
+        if (fs.existsSync(newFolderName)) {
+            res.end("文件夹已经存在")
+            return;
+        }
+        fs.mkdirSync(newFolderName)
+        res.end('创建文件夹成功')
+
+    })
+}
+
+
+
+
+
+
+/**
+ * API 处理函数 end
+ */
 
 
 module.exports = {
@@ -311,7 +517,12 @@ module.exports = {
     cookieVerify,
     getAllFileInfo,
     uploadFile,
-    downloadFile,
     deleteFile,
-    modifyTextFile
+    modifyTextFile,
+    directoryDownload,
+    downloadFile,
+    moveFile,
+    newFile,
+    newFolder,
+    logout
 }

@@ -8,6 +8,7 @@
     <link rel="shortcut icon" href="/public/favicon.ico" type="image/x-icon">
     <title>zp文件服务器</title>
     <script src="/public/js/jq.js"></script>
+    <script src="/public/lib/layer/layer.js"></script>
     <style>
         .wrap {
             width: 300px;
@@ -72,6 +73,7 @@
         <input id="user" class="zp-input" placeholder="用户名" autofocus>
         <input id="password" class="zp-input" type="password" placeholder="密码">
         <button id="submit_password" class="button">验证</button>
+		<a href="/publicFile">公开的文件</a>
     </div>
 
 
@@ -84,13 +86,18 @@
 
 
         submit_password.onclick = function() {
+			let data = {
+                    user: user.value,
+                    password: password.value
+                };
+			if (!data.user || !data.password){
+				layer.msg("账号或密码为空")
+				return;
+			}
             $.ajax({
                 url: '/identityVerify',
                 type: 'post',
-                data: JSON.stringify({
-                    user: user.value,
-                    password: password.value
-                }),
+                data: JSON.stringify(data),
                 success(d) {
                     console.log("d: ", d);
                     d = JSON.parse(d)
@@ -99,7 +106,7 @@
                         location.reload();
 
                     } else {
-                        alert(d.msg)
+                        layer.msg(d.msg)
                     }
                 }
             })
